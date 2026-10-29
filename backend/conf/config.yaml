@@ -1,0 +1,55 @@
+logging:
+  file:
+    enable: true
+    level: INFO
+    path: logs
+    rotation: "10 MB"
+    retention: "7 days"
+  console:
+    enable: true
+    level: INFO
+
+db_meta:
+  host: 192.168.0.111
+  port: 3306
+  user: dsws_agent
+  password: 123456
+  database: dsws_agent
+
+db_dw:
+  host: 192.168.0.111
+  port: 3306
+  user: dsws_agent
+  password: 123456
+  database: dsws_agent
+
+qdrant:
+  host: 192.168.0.111
+  port: 6333
+  embedding_size: 1024
+
+embedding:
+  host: 192.168.0.111
+  port: 8081
+  model: BAAI/bge-large-zh-v1.5
+
+# 本地 Embedding 配置，对应 YAML 里的 local_embedding 分组
+# enable 为 true 时优先加载本地模型，不再走 embedding 的远程接口
+local_embedding:
+  enable: true
+  # 模型权重缓存目录，首次启动时框架会自动下载到这里，后续直接复用缓存
+  cache_dir: docker/embedding
+  # HuggingFace 下载源，国内网络使用镜像地址可显著提速
+  hf_endpoint: https://hf-mirror.com
+  # 运行设备，CPU 填 cpu；有可用显卡时可填 cuda 或 cuda:0
+  device: cpu
+
+es:
+  host: 192.168.0.111
+  port: 9200
+  index_name: dsws_agent
+
+llm:
+  model_name: agnes-2.5-flash
+  api_key: sk-4xqWK3w6YK07wT0gBlg5Qo5QGqYC7QbXIiMErlwDi4iXJFW9
+  base_url: https://apihub.agnes-ai.com/v1

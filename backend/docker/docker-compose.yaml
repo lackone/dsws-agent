@@ -1,0 +1,168 @@
+# =============================================================================
+# dsws-agent 本地基础设施编排文件
+# 说明:
+#   1. 所有服务的持久化数据统一映射到本文件所在目录下的子目录 (相对路径 ./),
+#      便于整体备份、迁移与清理, 不会污染宿主机其他位置.
+#   2. 数据目录清单:
+#        ./mysql              MySQL 8 数据目录
+#        ./elasticsearch      Elasticsearch 数据目录
+#        ./kibana             Kibana 配置数据目录
+#        ./qdrant             Qdrant 向量数据目录
+#        ./embedding          Embedding 缓存目录 (模型权重与 HuggingFace 缓存)
+#   3. 端口规划:
+#        3306  MySQL
+#        9200  Elasticsearch HTTP / 9300 Elasticsearch 集群通信
+#        5601  Kibana
+#        6333  Qdrant HTTP / 6334 Qdrant gRPC
+#        8080  Embedding 服务 (OpenAI 兼容接口)
+# =============================================================================
+
+name: dsws-agent
+
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL 8: 业务关系型数据库
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: dsws-mysql
+    restart: unless-stopped
+    environment:
+      # root 账号密码, 建议在 .env 中覆盖
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      # 初始化时自动创建的数据库, 供应用连接使用
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-dsws_agent}
+      # 应用使用的普通账号
+      MYSQL_USER: ${MYSQL_USER:-dsws_agent}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      # 统一字符集为 utf8mb4, 避免中文与 emoji 存储异常
+      TZ: Asia/Shanghai
+    command:
+      # 关闭 ONLY_FULL_GROUP_BY 之外的兼容性调整按需自行追加
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "3306:3306"
+    volumes:
+      # 数据库数据文件持久化目录
+      - ./mysql:/var/lib/mysql
+    healthcheck:
+      # 使用 mysqladmin 探测数据库是否可用
+      test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-123456}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Elasticsearch 8: 全文检索服务, 单节点模式
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: dsws-elasticsearch
+    restart: unless-stopped
+    environment:
+      # 单节点集群, 适合本地开发
+      discovery.type: single-node
+      # 关闭安全认证, 便于本地调试; 生产环境请开启并配置证书
+      xpack.security.enabled: "false"
+      # JVM 堆内存, 可按机器内存调整
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      TZ: Asia/Shanghai
+    ulimits:
+      # 解决容器内文件句柄数不足导致的启动报错
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      # ES 数据与日志持久化目录
+      - ./elasticsearch/data:/usr/share/elasticsearch/data
+    healthcheck:
+      # 通过集群健康接口判断是否可用
+      test: [ "CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\"'" ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # Kibana: Elasticsearch 可视化控制台
+  # ---------------------------------------------------------------------------
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: dsws-kibana
+    restart: unless-stopped
+    environment:
+      SERVER_HOST: "0.0.0.0"
+      # 指定所连接的 Elasticsearch 地址 (容器网络内使用服务名)
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      # 界面使用中文
+      I18N_LOCALE: zh-CN
+      TZ: Asia/Shanghai
+    ports:
+      - "5601:5601"
+    volumes:
+      # 保存 Kibana 的已保存对象(仪表盘/可视化等)与配置
+      - ./kibana/data:/usr/share/kibana/data
+    depends_on:
+      elasticsearch:
+        # 等待 ES 健康后再启动 Kibana
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Qdrant: 向量数据库, 用于存放 embedding 向量与检索
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: dsws-qdrant
+    restart: unless-stopped
+    ports:
+      # 6333 HTTP 接口 / 6334 gRPC 接口
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      # 向量数据与快照持久化目录
+      - ./qdrant/storage:/qdrant/storage
+    healthcheck:
+      # 通过就绪探针判断服务是否可用
+      test: [ "CMD-SHELL", "curl -sf http://localhost:6333/readyz || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Embedding: bge-large-zh-v1.5 文本向量化服务
+  # 采用 Text Embeddings Inference (TEI) 官方镜像, 暴露 OpenAI 兼容的 /v1/embeddings
+  # 接口, 与 langchain-openai 的 OpenAIEmbeddings 可直接对接.
+  # 采用离线模式: 模型权重需提前下载到 ./embedding/bge-large-zh-v1.5 目录,
+  # 容器启动时直接加载本地文件, 不再访问 HuggingFace, 断网亦可运行.
+  # ---------------------------------------------------------------------------
+  embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: dsws-embedding
+    restart: unless-stopped
+    # 以 root 运行, 避免读取挂载目录时出现权限问题
+    user: root
+    command:
+      # 指向容器内的本地模型目录, 该值为路径而非仓库名, TEI 会跳过下载流程
+      - --model-id
+      - /data/model
+      - --max-batch-tokens
+      - "8192"
+      - --max-client-batch-size
+      - "64"
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "8081:80"
+    volumes:
+      # 将宿主机提前下载好的模型目录以只读方式挂载进容器
+      - ./embedding/bge-large-zh-v1.5:/data/model:ro
+    healthcheck:
+      # 通过健康检查接口判断模型是否加载完成
+      test: [ "CMD-SHELL", "curl -sf http://localhost:80/health || exit 1" ]
+      interval: 20s
+      timeout: 10s
+      retries: 30
