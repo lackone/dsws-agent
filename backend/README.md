@@ -16,6 +16,22 @@ chown -R 1000:1000 elasticsearch/data
 docker compose up -d elasticsearch
 ```
 
+如果出现 analyzer [ik_max_word] has not been configured in mappings
+
+```
+# 进入容器
+docker exec -it dsws-elasticsearch bash
+
+# 安装插件
+elasticsearch-plugin install --batch https://get.infini.cloud/elasticsearch/analysis-ik/8.15.0
+
+# 退出容器
+exit
+
+# ⚠️ 必须重启容器才生效
+docker restart dsws-elasticsearch
+```
+
 如果 kibana 启动失败
 
 ```
